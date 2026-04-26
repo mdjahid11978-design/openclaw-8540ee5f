@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { logVerbose, shouldLogVerbose } from "../../globals.js";
 import { resolveGlobalDedupeCache, type DedupeCache } from "../../infra/dedupe.js";
 import { parseAgentSessionKey } from "../../sessions/session-key-utils.js";
@@ -59,7 +60,7 @@ export function buildInboundDedupeKey(ctx: MsgContext): string | null {
   const provider =
     normalizeOptionalLowercaseString(ctx.OriginatingChannel ?? ctx.Provider ?? ctx.Surface) || "";
   const messageId = normalizeOptionalString(ctx.MessageSid);
-  if (!provider || !messageId) {
+  if (!provider) {
     return null;
   }
   const peerId = resolveInboundPeerId(ctx);
@@ -72,7 +73,20 @@ export function buildInboundDedupeKey(ctx: MsgContext): string | null {
     ctx.MessageThreadId !== undefined && ctx.MessageThreadId !== null
       ? String(ctx.MessageThreadId)
       : "";
-  return [provider, accountId, sessionScope, peerId, threadId, messageId].filter(Boolean).join("|");
+  // Use messageId if available, otherwise fall back to content-based hash
+  // to ensure messages without a stable ID (e.g., some channel retries)
+  // are still deduplicated by content
+  if (messageId) {
+    return [provider, accountId, sessionScope, peerId, threadId, messageId].filter(Boolean).join("|");
+  }
+  // Content-based fallback when messageId is unavailable
+  const contentHash = createHash("sha256")
+    .update(`${ctx.Body ?? ""}|${ctx.Timestamp ?? 0}|${peerId}`, "utf8")
+    .digest("hex")
+    .substring(0, 16);
+  return [provider, accountId, sessionScope, peerId, threadId, `content:${contentHash}`]
+    .filter(Boolean)
+    .join("|");
 }
 
 export function shouldSkipDuplicateInbound(
